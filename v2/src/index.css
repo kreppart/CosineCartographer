@@ -1,0 +1,101 @@
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  background: #000000;
+}
+
+/* Hide number input spinners */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #d1d5db;
+  cursor: pointer;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #d1d5db;
+  cursor: pointer;
+  border: none;
+}
+
+/* Vertical slider styles using transform */
+input[type="range"][orient="vertical"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 200px;
+  height: 18px;
+  background: transparent;
+  transform: rotate(-90deg);
+  transform-origin: center center;
+  margin: 90px 0;
+}
+
+/* Track styling for vertical sliders */
+input[type="range"][orient="vertical"]::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 8px;
+  background: #1a1a1a;
+  border: 1px solid #404040;
+  border-radius: 4px;
+}
+
+input[type="range"][orient="vertical"]::-moz-range-track {
+  width: 100%;
+  height: 8px;
+  background: #1a1a1a;
+  border: 1px solid #404040;
+  border-radius: 4px;
+}
+
+/* Vertical slider thumb - fader cap style */
+input[type="range"][orient="vertical"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 40px;
+  height: 26px;
+  border-radius: 4px;
+  background: linear-gradient(to bottom, #f3f4f6 0%, #e5e7eb 30%, #d1d5db 60%, #9ca3af 100%);
+  cursor: pointer;
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.2);
+  border: 1px solid #6b7280;
+  position: relative;
+  margin-top: -9px;
+}
+
+input[type="range"][orient="vertical"]::-moz-range-thumb {
+  width: 40px;
+  height: 26px;
+  border-radius: 4px;
+  background: linear-gradient(to bottom, #f3f4f6 0%, #e5e7eb 30%, #d1d5db 60%, #9ca3af 100%);
+  cursor: pointer;
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.2);
+  border: 1px solid #6b7280;
+}
