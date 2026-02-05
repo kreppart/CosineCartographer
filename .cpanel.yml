@@ -1,4 +1,9 @@
 ---
 deployment:
   tasks:
-    - /bin/cp -R dist/* /home/reppart2/public_html/CosineCartographer/
+    - /bin/cp dist/index.html /home/reppart2/public_html/CosineCartographer/
+    - /bin/cp dist/banner.png /home/reppart2/public_html/CosineCartographer/
+    - /bin/cp dist/favicon.ico /home/reppart2/public_html/CosineCartographer/
+    - /bin/cp dist/favicon.png /home/reppart2/public_html/CosineCartographer/
+    - /bin/cp dist/vite.svg /home/reppart2/public_html/CosineCartographer/
+    - /bin/cp -R dist/assets /home/reppart2/public_html/CosineCartographer/
