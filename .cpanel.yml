@@ -1,5 +1,4 @@
 ---
 deployment:
   tasks:
-    - export DEPLOYPATH=/home/reppart2/public_html/CosineCartographer
-    - /bin/cp -R dist/* $DEPLOYPATH/
+    - /bin/cp -R dist/* /home/reppart2/public_html/CosineCartographer/
