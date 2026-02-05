@@ -276,15 +276,17 @@ export default function TonePhase() {
   const [bpm, setBpm] = useState(60);
   const [rootFreq, setRootFreq] = useState(440);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [audioReady, setAudioReady] = useState(false); // Track if Tone.js is initialized
+  const [resetFlash, setResetFlash] = useState(false); // For visual feedback on reset
   const [masterVolume, setMasterVolume] = useState(0.3);
   const [masterMuted, setMasterMuted] = useState(false);
-  const [volumes, setVolumes] = useState([0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
-  const [muted, setMuted] = useState([false, false, false, false, false, false]);
+  const [volumes, setVolumes] = useState([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
+  const [muted, setMuted] = useState([false, false, false, false, false, false, false, false]);
 
   // LFO state for each channel
-  const [lfoRates, setLfoRates] = useState([0.5, 0.5, 0.5, 0.5, 0.5, 0.5]); // Hz
-  const [lfoAmounts, setLfoAmounts] = useState([0, 0, 0, 0, 0, 0]); // 0-1 (percentage)
-  const [modulatedVolumes, setModulatedVolumes] = useState([0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
+  const [lfoRates, setLfoRates] = useState([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]); // Hz
+  const [lfoAmounts, setLfoAmounts] = useState([0, 0, 0, 0, 0, 0, 0, 0]); // 0-1 (percentage)
+  const [modulatedVolumes, setModulatedVolumes] = useState([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
 
   const timeScale = 3.0; // Hard-coded time scale value
   const lfoAnimationRef = useRef(null);
@@ -297,8 +299,9 @@ export default function TonePhase() {
   const canvasRef = useRef(null);
   const animationRef = useRef(null);
   const scrollOffsetRef = useRef(0);
+  const tapTimesRef = useRef([]); // For tap tempo
 
-  const beatRatios = [0, 1, 2, 4, 8, 16];
+  const beatRatios = [0, 0.25, 0.5, 1, 2, 4, 8, 16];
 
   const calculateFrequencies = () => {
     const beatHz = bpm / 60;
@@ -411,7 +414,7 @@ export default function TonePhase() {
     if (!isPlaying) {
       volumes.forEach((vol, idx) => {
         if (gainsRef.current[idx]) {
-          gainsRef.current[idx].gain.rampTo(0, 0.05);
+          gainsRef.current[idx].gain.value = 0; // Instant stop, no ramp
         }
       });
     }
@@ -499,12 +502,49 @@ export default function TonePhase() {
     };
   }, [isPlaying]);
 
-  const togglePlay = async () => {
-    if (!isPlaying) {
+  // Pre-initialize audio on any user interaction for lower latency
+  const initAudio = useCallback(async () => {
+    if (!audioReady) {
       await Tone.start();
-      setIsPlaying(true);
-    } else {
-      setIsPlaying(false);
+      setAudioReady(true);
+    }
+  }, [audioReady]);
+
+  const togglePlay = async () => {
+    if (!audioReady) {
+      await Tone.start();
+      setAudioReady(true);
+    }
+    setIsPlaying(!isPlaying);
+  };
+
+  // Reset all oscillators to phase 0 for clean sync
+  const resetOscillators = () => {
+    // Visual feedback
+    setResetFlash(true);
+    setTimeout(() => setResetFlash(false), 150);
+
+    // Brief mute for audible "click" to mark the reset point
+    if (masterGainRef.current) {
+      const currentVol = masterMuted ? 0 : masterVolume;
+      masterGainRef.current.gain.value = 0;
+
+      // Reset all oscillator phases (Tone.js uses degrees 0-360)
+      oscillatorsRef.current.forEach((osc) => {
+        if (osc) {
+          osc.phase = 0;
+        }
+      });
+
+      // Reset LFO timing
+      lfoStartTimeRef.current = Date.now();
+
+      // Restore volume after brief silence
+      setTimeout(() => {
+        if (masterGainRef.current) {
+          masterGainRef.current.gain.value = currentVol;
+        }
+      }, 10);
     }
   };
 
@@ -522,8 +562,8 @@ export default function TonePhase() {
 
   const randomizeVolumes = () => {
     const newVolumes = [...volumes];
-    // Randomize oscillators 1-5 (×1 through ×16) with max 75%
-    for (let i = 1; i <= 5; i++) {
+    // Randomize oscillators 1-7 (×1/4 through ×16) with max 75%
+    for (let i = 1; i <= 7; i++) {
       newVolumes[i] = Math.random() * 0.75;
     }
     setVolumes(newVolumes);
@@ -570,9 +610,124 @@ export default function TonePhase() {
     return `${Math.round(amount * 100)}%`;
   };
 
+  const handleTapTempo = () => {
+    const now = Date.now();
+    const taps = tapTimesRef.current;
+
+    // Reset if last tap was more than 2 seconds ago
+    if (taps.length > 0 && now - taps[taps.length - 1] > 2000) {
+      tapTimesRef.current = [];
+    }
+
+    taps.push(now);
+
+    // Keep only the last 8 taps
+    if (taps.length > 8) {
+      taps.shift();
+    }
+
+    // Need at least 2 taps to calculate BPM
+    if (taps.length >= 2) {
+      // Calculate average interval between taps
+      let totalInterval = 0;
+      for (let i = 1; i < taps.length; i++) {
+        totalInterval += taps[i] - taps[i - 1];
+      }
+      const avgInterval = totalInterval / (taps.length - 1);
+
+      // Convert to BPM (ms to minutes)
+      const calculatedBpm = Math.round(60000 / avgInterval);
+
+      // Clamp to valid range
+      const clampedBpm = Math.max(1, Math.min(300, calculatedBpm));
+      setBpm(clampedBpm);
+    }
+  };
+
   const getOscillatorLabel = (idx) => {
     if (idx === 0) return 'Root';
-    return `×${beatRatios[idx]}`;
+    const ratio = beatRatios[idx];
+    // Musical note naming: whole=1, half=1/2, quarter=1/4, etc.
+    const noteLabels = {
+      0.25: '1',      // whole note (4 beats)
+      0.5: '1/2',     // half note (2 beats)
+      1: '1/4',       // quarter note (1 beat)
+      2: '1/8',       // eighth note (1/2 beat)
+      4: '1/16',      // sixteenth note (1/4 beat)
+      8: '1/32',      // thirty-second note
+      16: '1/64',     // sixty-fourth note
+    };
+    return noteLabels[ratio] || `×${ratio}`;
+  };
+
+  // SVG components for musical notes - consistent styling across all browsers
+  const noteStyle = { verticalAlign: 'middle', display: 'inline-block' };
+
+  const WholeNote = () => (
+    <svg width="14" height="10" viewBox="0 0 14 10" style={noteStyle}>
+      <ellipse cx="7" cy="5" rx="5.5" ry="3.5" fill="none" stroke="currentColor" strokeWidth="1.5" transform="rotate(-20 7 5)" />
+    </svg>
+  );
+
+  const HalfNote = () => (
+    <svg width="10" height="18" viewBox="0 0 10 18" style={noteStyle}>
+      <ellipse cx="4" cy="14" rx="3.5" ry="2.5" fill="none" stroke="currentColor" strokeWidth="1.5" transform="rotate(-20 4 14)" />
+      <line x1="7.5" y1="14" x2="7.5" y2="1" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+
+  const QuarterNote = () => (
+    <svg width="10" height="18" viewBox="0 0 10 18" style={noteStyle}>
+      <ellipse cx="4" cy="14" rx="3.5" ry="2.5" fill="currentColor" transform="rotate(-20 4 14)" />
+      <line x1="7.5" y1="14" x2="7.5" y2="1" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+
+  const EighthNote = () => (
+    <svg width="12" height="18" viewBox="0 0 12 18" style={noteStyle}>
+      <ellipse cx="4" cy="14" rx="3.5" ry="2.5" fill="currentColor" transform="rotate(-20 4 14)" />
+      <line x1="7.5" y1="14" x2="7.5" y2="1" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M7.5 1 Q11 3 10 7" fill="none" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+
+  const SixteenthNote = () => (
+    <svg width="12" height="18" viewBox="0 0 12 18" style={noteStyle}>
+      <ellipse cx="4" cy="14" rx="3.5" ry="2.5" fill="currentColor" transform="rotate(-20 4 14)" />
+      <line x1="7.5" y1="14" x2="7.5" y2="1" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M7.5 1 Q11 3 10 7" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M7.5 4 Q11 6 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+
+  const ThirtySecondNote = () => (
+    <svg width="12" height="18" viewBox="0 0 12 18" style={noteStyle}>
+      <ellipse cx="4" cy="14" rx="3.5" ry="2.5" fill="currentColor" transform="rotate(-20 4 14)" />
+      <line x1="7.5" y1="14" x2="7.5" y2="1" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M7.5 1 Q11 3 10 6" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M7.5 3.5 Q11 5.5 10 8.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M7.5 6 Q11 8 10 11" fill="none" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+
+  const getNoteSymbol = (idx) => {
+    if (idx === 0) return null; // No symbol for Root
+    const ratio = beatRatios[idx];
+
+    const noteData = {
+      0.25: { component: <WholeNote />, name: 'Whole note' },
+      0.5: { component: <HalfNote />, name: 'Half note' },
+      1: { component: <QuarterNote />, name: 'Quarter note' },
+      2: { component: <EighthNote />, name: 'Eighth note' },
+      4: { component: <SixteenthNote />, name: 'Sixteenth note' },
+      8: { component: <ThirtySecondNote />, name: 'Thirty-second note' },
+      16: { component: <ThirtySecondNote />, name: 'Sixty-fourth note' },
+    };
+
+    const data = noteData[ratio];
+    if (!data) return null;
+
+    return <span title={data.name}>{data.component}</span>;
   };
 
   const getBeatFrequency = (idx) => {
@@ -757,7 +912,7 @@ export default function TonePhase() {
       lineHeight: '1',
     },
     faderLabel: {
-      fontSize: '0.75rem',
+      fontSize: '1rem',
       fontWeight: '600',
       color: '#f3f4f6',
       marginBottom: '0.35rem',
@@ -857,7 +1012,7 @@ export default function TonePhase() {
   };
 
   return (
-    <div style={styles.container}>
+    <div style={styles.container} onMouseDown={initAudio}>
       <div style={styles.maxWidth}>
         <div style={styles.header}>
           <h1 style={styles.title}>Cosine Cartographer</h1>
@@ -868,14 +1023,29 @@ export default function TonePhase() {
           <div style={styles.inputGrid}>
             <div style={styles.inputGroup}>
               <label style={styles.label}>BPM (Beats Per Minute)</label>
-              <input
-                type="number"
-                value={bpm}
-                onChange={(e) => setBpm(parseFloat(e.target.value) || 0)}
-                style={styles.input}
-                min="1"
-                max="300"
-              />
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <input
+                  type="number"
+                  value={bpm}
+                  onChange={(e) => setBpm(parseFloat(e.target.value) || 0)}
+                  style={{ ...styles.input, flex: 1 }}
+                  min="1"
+                  max="300"
+                />
+                <button
+                  onClick={handleTapTempo}
+                  style={{
+                    ...styles.button,
+                    width: 'auto',
+                    padding: '0.5rem 1rem',
+                    fontSize: '0.875rem',
+                    background: 'linear-gradient(to right, #525252, #404040)',
+                  }}
+                  title="Tap repeatedly to set tempo"
+                >
+                  👆 Tap
+                </button>
+              </div>
               <input
                 type="range"
                 min="1"
@@ -919,6 +1089,19 @@ export default function TonePhase() {
               }}
             >
               {isPlaying ? '⏸ Stop' : '▶ Play'}
+            </button>
+            <button
+              onClick={resetOscillators}
+              style={{
+                ...styles.button,
+                background: resetFlash
+                  ? 'linear-gradient(to right, #22d3ee, #0891b2)'
+                  : 'linear-gradient(to right, #525252, #404040)',
+                transition: 'background 0.1s',
+              }}
+              title="Reset all oscillators to phase 0"
+            >
+              ↺ Reset
             </button>
             <button
               onClick={randomizeVolumes}
@@ -985,7 +1168,12 @@ export default function TonePhase() {
                     MUTE
                   </div>
                   <div style={styles.faderLabel}>
-                    {getOscillatorLabel(idx)}
+                    {idx === 0 ? 'Root' : (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', position: 'relative' }}>
+                        {getNoteSymbol(idx)}
+                        <span style={{ opacity: 0.7, fontSize: '0.6rem', position: 'absolute', left: '100%', marginLeft: '2px', whiteSpace: 'nowrap' }}>({getOscillatorLabel(idx)})</span>
+                      </span>
+                    )}
                   </div>
                   <div style={styles.faderFreq}>
                     {freq.toFixed(1)} Hz
