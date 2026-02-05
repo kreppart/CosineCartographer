@@ -1020,6 +1020,8 @@ export default function TonePhase() {
             ))}
             <div style={styles.masterFader}>
               <div style={styles.channelContent}>
+                {/* Spacer to align with LFO section on other channels */}
+                <div style={{ height: '68px' }} />
                 <div
                   onClick={() => setMasterMuted(!masterMuted)}
                   style={{
