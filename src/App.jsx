@@ -1,6 +1,56 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as Tone from 'tone';
 
+// Musical note frequencies (A4 = 440Hz, equal temperament)
+// Generate all notes from C0 to B8
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const MUSICAL_NOTES = [];
+
+// A4 (440Hz) is the 49th key on piano, which is index 57 in our array (C0 = index 0)
+// A4 is 9 semitones above C4, and C4 is at octave 4, so A4 = 4*12 + 9 = 57
+const A4_INDEX = 57;
+const A4_FREQ = 440;
+
+for (let octave = 0; octave <= 8; octave++) {
+  for (let noteIdx = 0; noteIdx < 12; noteIdx++) {
+    const index = octave * 12 + noteIdx;
+    const semitonesFromA4 = index - A4_INDEX;
+    const frequency = A4_FREQ * Math.pow(2, semitonesFromA4 / 12);
+    MUSICAL_NOTES.push({
+      name: `${NOTE_NAMES[noteIdx]}${octave}`,
+      freq: frequency,
+    });
+  }
+}
+
+// Find the nearest musical note for a given frequency
+const getNearestNote = (freq) => {
+  let nearestNote = MUSICAL_NOTES[0];
+  let minDiff = Math.abs(freq - nearestNote.freq);
+
+  for (const note of MUSICAL_NOTES) {
+    const diff = Math.abs(freq - note.freq);
+    if (diff < minDiff) {
+      minDiff = diff;
+      nearestNote = note;
+    }
+  }
+
+  // Calculate cents difference (100 cents = 1 semitone)
+  const cents = 1200 * Math.log2(freq / nearestNote.freq);
+  return { ...nearestNote, cents: Math.round(cents) };
+};
+
+// Snap frequency to nearest note if within threshold
+const snapToNote = (freq, threshold = 5) => {
+  const nearest = getNearestNote(freq);
+  // Snap if within threshold Hz of a note
+  if (Math.abs(freq - nearest.freq) < threshold) {
+    return Math.round(nearest.freq * 1000) / 1000; // Round to 3 decimal places
+  }
+  return Math.round(freq * 1000) / 1000; // Round to 3 decimal places
+};
+
 // Custom rotary knob component for LFO controls
 // When commitOnRelease is true, onChange is only called when the user releases the knob
 function Knob({ value, onChange, min, max, label, formatValue, size = 36, exponential = false, commitOnRelease = false }) {
@@ -154,7 +204,7 @@ function Knob({ value, onChange, min, max, label, formatValue, size = 36, expone
 }
 
 // Custom vertical slider component with optional animated display value
-function VerticalSlider({ value, displayValue, onChange, min = 0, max = 1, step = 0.01 }) {
+function VerticalSlider({ value, displayValue, onChange, onDoubleClick, min = 0, max = 1, step = 0.01 }) {
   const sliderRef = useRef(null);
   const isDraggingRef = useRef(false);
   const onChangeRef = useRef(onChange);
@@ -259,6 +309,7 @@ function VerticalSlider({ value, displayValue, onChange, min = 0, max = 1, step 
       ref={sliderRef}
       style={sliderStyles.track}
       onMouseDown={handleMouseDown}
+      onDoubleClick={onDoubleClick}
     >
       <div style={sliderStyles.baseMarker} />
       <div
@@ -267,30 +318,40 @@ function VerticalSlider({ value, displayValue, onChange, min = 0, max = 1, step 
           e.stopPropagation();
           handleMouseDown(e);
         }}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          if (onDoubleClick) onDoubleClick();
+        }}
       />
     </div>
   );
 }
 
 export default function TonePhase() {
-  const [bpm, setBpm] = useState(60);
+  const [bpm, setBpm] = useState(127);
   const [rootFreq, setRootFreq] = useState(440);
   const [isPlaying, setIsPlaying] = useState(false);
   const [audioReady, setAudioReady] = useState(false); // Track if Tone.js is initialized
   const [resetFlash, setResetFlash] = useState(false); // For visual feedback on reset
   const [masterVolume, setMasterVolume] = useState(0.3);
   const [masterMuted, setMasterMuted] = useState(false);
-  const [volumes, setVolumes] = useState([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
+  const [volumes, setVolumes] = useState([0.5, 0, 0, 0.5, 0, 0, 0, 0]);
   const [muted, setMuted] = useState([false, false, false, false, false, false, false, false]);
 
   // LFO state for each channel
   const [lfoRates, setLfoRates] = useState([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]); // Hz
   const [lfoAmounts, setLfoAmounts] = useState([0, 0, 0, 0, 0, 0, 0, 0]); // 0-1 (percentage)
-  const [modulatedVolumes, setModulatedVolumes] = useState([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
+  const [modulatedVolumes, setModulatedVolumes] = useState([0.5, 0, 0, 0.5, 0, 0, 0, 0]);
 
   const timeScale = 3.0; // Hard-coded time scale value
   const lfoAnimationRef = useRef(null);
   const lfoStartTimeRef = useRef(Date.now());
+
+  // Metronome state
+  const [isMetronomeOn, setIsMetronomeOn] = useState(false);
+  const metronomeRef = useRef(null);
+  const metronomeSynthRef = useRef(null);
+  const beatCountRef = useRef(0);
 
   const oscillatorsRef = useRef([]);
   const gainsRef = useRef([]);
@@ -348,10 +409,6 @@ export default function TonePhase() {
     });
   }, [bpm, rootFreq]);
 
-  // Randomize volumes on initial load
-  useEffect(() => {
-    randomizeVolumes();
-  }, []);
 
   useEffect(() => {
     if (masterGainRef.current) {
@@ -502,6 +559,66 @@ export default function TonePhase() {
     };
   }, [isPlaying]);
 
+  // Metronome effect - only runs when toggling on/off
+  useEffect(() => {
+    // Create synth for metronome clicks if it doesn't exist
+    if (!metronomeSynthRef.current) {
+      metronomeSynthRef.current = new Tone.MembraneSynth({
+        pitchDecay: 0.008,
+        octaves: 2,
+        envelope: {
+          attack: 0.001,
+          decay: 0.1,
+          sustain: 0,
+          release: 0.1,
+        },
+      }).toDestination();
+    }
+
+    if (isMetronomeOn) {
+      // Reset beat count
+      beatCountRef.current = 0;
+
+      // Use musical time notation "4n" (quarter note) - automatically adjusts to BPM
+      metronomeRef.current = new Tone.Loop((time) => {
+        const isDownbeat = beatCountRef.current % 4 === 0;
+        const pitch = isDownbeat ? 'C5' : 'C4'; // Higher pitch on downbeat
+        const velocity = isDownbeat ? 0.8 : 0.5;
+
+        metronomeSynthRef.current.triggerAttackRelease(pitch, '16n', time, velocity);
+        beatCountRef.current++;
+      }, '4n');
+
+      // Start the loop
+      Tone.Transport.bpm.value = bpm;
+      metronomeRef.current.start(0);
+      Tone.Transport.start();
+    } else {
+      // Stop metronome
+      if (metronomeRef.current) {
+        metronomeRef.current.stop();
+        metronomeRef.current.dispose();
+        metronomeRef.current = null;
+      }
+      Tone.Transport.stop();
+    }
+
+    return () => {
+      if (metronomeRef.current) {
+        metronomeRef.current.stop();
+        metronomeRef.current.dispose();
+        metronomeRef.current = null;
+      }
+    };
+  }, [isMetronomeOn]);
+
+  // Update Transport BPM when bpm changes (without recreating the loop)
+  useEffect(() => {
+    if (isMetronomeOn) {
+      Tone.Transport.bpm.value = bpm;
+    }
+  }, [bpm, isMetronomeOn]);
+
   // Pre-initialize audio on any user interaction for lower latency
   const initAudio = useCallback(async () => {
     if (!audioReady) {
@@ -514,6 +631,10 @@ export default function TonePhase() {
     if (!audioReady) {
       await Tone.start();
       setAudioReady(true);
+    }
+    // Reset oscillators when starting playback
+    if (!isPlaying) {
+      resetOscillators();
     }
     setIsPlaying(!isPlaying);
   };
@@ -538,6 +659,14 @@ export default function TonePhase() {
 
       // Reset LFO timing
       lfoStartTimeRef.current = Date.now();
+
+      // Reset metronome to beat 1 (downbeat)
+      beatCountRef.current = 0;
+      if (isMetronomeOn && metronomeRef.current) {
+        Tone.Transport.stop();
+        Tone.Transport.position = 0;
+        Tone.Transport.start();
+      }
 
       // Restore volume after brief silence
       setTimeout(() => {
@@ -584,6 +713,18 @@ export default function TonePhase() {
 
     setLfoRates(newRates);
     setLfoAmounts(newAmounts);
+  };
+
+  const toggleMetronome = async () => {
+    if (!audioReady) {
+      await Tone.start();
+      setAudioReady(true);
+    }
+    // Reset oscillators when turning on metronome
+    if (!isMetronomeOn) {
+      resetOscillators();
+    }
+    setIsMetronomeOn(!isMetronomeOn);
   };
 
   const handleLfoRateChange = (idx, value) => {
@@ -1015,8 +1156,8 @@ export default function TonePhase() {
     <div style={styles.container} onMouseDown={initAudio}>
       <div style={styles.maxWidth}>
         <div style={styles.header}>
-          <h1 style={styles.title}>Cosine Cartographer</h1>
-          <p style={styles.subtitle}>Binaural Beat Generator</p>
+          <h1 style={styles.title}>Binaural Beat Explorer</h1>
+          <p style={styles.subtitle}>Explore the world of binaural beats</p>
         </div>
 
         <div style={styles.card}>
@@ -1059,22 +1200,45 @@ export default function TonePhase() {
 
             <div style={styles.inputGroup}>
               <label style={styles.label}>Root Frequency (Hz)</label>
-              <input
-                type="number"
-                value={rootFreq}
-                onChange={(e) => setRootFreq(parseFloat(e.target.value) || 0)}
-                style={styles.input}
-                min="20"
-                max="2000"
-                step="0.01"
-              />
+              <div style={{ position: 'relative' }}>
+                <input
+                  type="number"
+                  value={Math.round(rootFreq * 1000) / 1000}
+                  onChange={(e) => setRootFreq(Math.round((parseFloat(e.target.value) || 0) * 1000) / 1000)}
+                  style={styles.input}
+                  min="20"
+                  max="2000"
+                  step="0.001"
+                />
+                {(() => {
+                  const note = getNearestNote(rootFreq);
+                  const centsDisplay = note.cents === 0 ? '' : note.cents > 0 ? ` +${note.cents}¢` : ` ${note.cents}¢`;
+                  return (
+                    <span style={{
+                      position: 'absolute',
+                      right: '10px',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      color: note.cents === 0 ? '#22d3ee' : '#9ca3af',
+                      fontSize: '0.875rem',
+                      fontWeight: note.cents === 0 ? '600' : '400',
+                      pointerEvents: 'none',
+                    }}>
+                      {note.name}{centsDisplay}
+                    </span>
+                  );
+                })()}
+              </div>
               <input
                 type="range"
                 min="20"
                 max="2000"
                 step="0.1"
                 value={rootFreq}
-                onChange={(e) => setRootFreq(parseFloat(e.target.value))}
+                onChange={(e) => {
+                  const newFreq = parseFloat(e.target.value);
+                  setRootFreq(snapToNote(newFreq, 8));
+                }}
                 style={{ ...styles.range, marginTop: '0.5rem' }}
               />
             </div>
@@ -1114,6 +1278,18 @@ export default function TonePhase() {
               style={{ ...styles.button, ...styles.randomButton }}
             >
               🎛️ Randomize LFO
+            </button>
+            <button
+              onClick={toggleMetronome}
+              style={{
+                ...styles.button,
+                background: isMetronomeOn
+                  ? 'linear-gradient(to right, #22d3ee, #0891b2)'
+                  : 'linear-gradient(to right, #525252, #404040)',
+              }}
+              title="Toggle metronome"
+            >
+              🎵 Metronome
             </button>
           </div>
         </div>
@@ -1176,9 +1352,9 @@ export default function TonePhase() {
                     )}
                   </div>
                   <div style={styles.faderFreq}>
-                    {freq.toFixed(1)} Hz
+                    {freq.toFixed((idx === 1 || idx === 2) ? 2 : 1)} Hz
                     {idx > 0 ? (
-                      <div>(±{getBeatFrequency(idx).toFixed(1)} Hz)</div>
+                      <div>({getBeatFrequency(idx).toFixed((idx === 1 || idx === 2) ? 2 : 1)} Hz)</div>
                     ) : (
                       <div style={{ height: '1em' }}>&nbsp;</div>
                     )}
@@ -1198,6 +1374,7 @@ export default function TonePhase() {
                       value={volumes[idx]}
                       displayValue={lfoAmounts[idx] > 0 ? modulatedVolumes[idx] : undefined}
                       onChange={(newValue) => handleVolumeChange(idx, newValue)}
+                      onDoubleClick={() => handleVolumeChange(idx, 0.5)}
                       min={0}
                       max={1}
                       step={0.01}
@@ -1241,6 +1418,7 @@ export default function TonePhase() {
                   <VerticalSlider
                     value={masterVolume}
                     onChange={setMasterVolume}
+                    onDoubleClick={() => setMasterVolume(0.5)}
                     min={0}
                     max={1}
                     step={0.01}
